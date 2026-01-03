@@ -1,0 +1,23 @@
+# ---- Core numerical stack ----
+numpy>=1.23
+pandas>=1.5
+scipy>=1.9
+
+# ---- Statistics / econometrics ----
+statsmodels>=0.13
+
+# ---- Plotting / visualization ----
+matplotlib>=3.6
+
+# ---- Data access (IBKR) ----
+ib-insync>=0.9.86
+
+# ---- Utilities ----
+python-dateutil>=2.8
+pytz>=2022.1
+
+# ---- Data formats ----
+pyarrow>=10.0
+
+# ---- Optional but useful ----
+tqdm>=4.64

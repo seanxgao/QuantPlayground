@@ -1,0 +1,106 @@
+{
+    "mega_cap": {
+    "description": "Mega-cap US equities (trend/drift heavy, efficiency high)",
+    "tickers": [
+        "AAPL","MSFT","AMZN","GOOGL","META",
+        "NVDA","AMD","INTC","QCOM","AVGO",
+        "JPM","BAC","GS","MS",
+        "XOM","CVX",
+        "JNJ","UNH","PG","KO"
+    ]
+    },
+    
+    "mega_tech": {
+    "description": "Mega-cap and large-cap US equities with strong technology tilt (long history, high liquidity, tech-driven behavior)",
+    "tickers": [
+        "AAPL", "MSFT", "AMZN", "GOOGL", "META",
+        "NVDA", "AMD", "INTC", "QCOM", "AVGO",
+        "ORCL", "IBM", "CSCO", "ADBE", "CRM",
+        "INTU", "SAP", "ACN", "CTSH",
+    
+        "TXN", "ADI", "MU", "NXPI", "MCHP",
+        "AMAT", "LRCX", "KLAC", "TER",
+    
+        "GLW", "APH",
+        "HPQ", "HPE", "NTAP", "WDC", "STX",
+    
+        "NFLX", "EBAY", "DIS", "CMCSA",
+    
+        "V", "MA", "PYPL",
+        "ADP", "CME", "ICE", "NDAQ",
+    
+        "JPM", "BAC", "GS", "MS",
+    
+        "XOM", "CVX",
+        "JNJ", "UNH", "PG", "KO"
+    ]
+    },
+
+    "industrial": {
+    "description": "Industrial / capital goods (slow-moving fundamentals, lower efficiency)",
+    "tickers": [
+        "CAT","DE","HON","GE","MMM",
+        "EMR","ITW","ETN","PH",
+        "CMI","ROK","IR"
+    ]
+    },
+
+    "materials": {
+    "description": "Materials / basic industry (cyclical, cost pass-through, residual overreaction)",
+    "tickers": [
+        "APD","SHW","NEM",
+        "FCX","NUE",
+        "ALB","DOW"
+    ]
+    },
+
+    "transport": {
+    "description": "Transportation & logistics (macro-sensitive, regime-driven)",
+    "tickers": [
+        "UPS","FDX",
+        "UNP","CSX","NSC",
+        "CP","CNI"
+    ]
+    },
+
+    "utilities": {
+    "description": "Utilities (low volatility, low alpha ceiling, clean noise test)",
+    "tickers": [
+        "NEE","DUK","SO","AEP",
+        "EXC","XEL","SRE","ED"
+    ]
+    },
+
+    "banks": {
+    "description": "Banks (rate & macro driven, not ideal for residual alpha)",
+    "tickers": [
+        "JPM","BAC","WFC","C",
+        "GS","MS"
+    ]
+    },
+
+    "pool_100": {
+    "description": "100 tickers pool",
+    "tickers": [
+        "AAPL","MSFT","NVDA","AMZN","GOOGL","META","TSLA","AVGO","ORCL","CRM",
+        "ADBE","NOW","INTU","AMD","QCOM","TXN","AMAT","LRCX","MU","IBM",
+    
+        "NFLX","DIS","TMUS","VZ","T","CMCSA","CHTR","SPOT","EA","TTWO",
+    
+        "WMT","COST","HD","LOW","TGT","NKE","SBUX","MCD","BKNG","ABNB",
+        "PG","KO","PEP","PM","MO","CL","KMB","EL","MDLZ","KHC",
+    
+        "JNJ","UNH","PFE","MRK","ABBV","LLY","AMGN","GILD","TMO","DHR",
+        "ISRG","CVS","CI","BMY","VRTX","REGN","SYK","MDT","BSX","HCA",
+    
+        "JPM","BAC","WFC","C","GS","MS","SCHW","BLK","AXP","V",
+        "MA","PYPL","CB","PGR","AIG","USB","TFC","PNC","CME","ICE",
+    
+        "CAT","DE","HON","GE","LMT","RTX","BA","UPS","FDX","UNP",
+        "CSX","NSC","GD","NOC","ETN","EMR","ITW","PH","ROK","CMI",
+    
+        "XOM","CVX","COP","SLB","EOG","OXY","APD","NEE","DUK"
+    ]
+    }
+  }
+  
