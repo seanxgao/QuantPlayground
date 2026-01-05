@@ -8,6 +8,7 @@ import pickle
 from typing import Any, Dict, Optional, Tuple
 
 import pandas as pd
+import numpy as np
 
 try:
     from tqdm import tqdm
@@ -49,8 +50,8 @@ class IBConnection:
         return self._connected and self.ib.isConnected()
 
 
-def quick_connect(host='127.0.0.1', port=4002):
-    conn = IBConnection(host=host, port=port, client_id=1)
+def quick_connect(client_id=1):
+    conn = IBConnection(host='127.0.0.1', port=4002, client_id= client_id)
     ib = conn.connect()
     return conn, ib
 
@@ -68,6 +69,50 @@ def show_universe(name, path="tickers.json"):
     return tickers
 
 
+def load_universe(name: str, path: str = "tickers.json") -> Dict[str, Any]:
+    """
+    Load universe config without printing.
+
+    Returns:
+        dict with keys including: description, tickers
+    """
+    with open(path, "r", encoding="utf-8") as f:
+        config = json.load(f)
+    if name not in config:
+        raise KeyError(f"Universe not found: {name}")
+    return config[name]
+
+
+def load_companies_prices_panel(universe: str, cache_dir: str = "cache/companies") -> pd.DataFrame:
+    """
+    Load a pre-assembled companies prices panel from a single cache file:
+        {cache_dir}/{universe}_prices_panel.pkl
+    """
+    path = Path(cache_dir) / f"{universe}_prices_panel.pkl"
+    if not path.exists():
+        raise FileNotFoundError(f"Companies panel cache not found: {path}")
+    obj = pd.read_pickle(path)
+    if not isinstance(obj, pd.DataFrame):
+        raise TypeError(f"Companies panel cache is not a DataFrame: {path}")
+    return obj
+
+
+def load_market_prices_cache(mkt_ticker: str, cache_dir: str = "cache/mkt") -> pd.Series:
+    """
+    Load a cached market prices Series from:
+        {cache_dir}/{mkt_ticker}_prices.pkl
+    """
+    path = Path(cache_dir) / f"{mkt_ticker}_prices.pkl"
+    if not path.exists():
+        raise FileNotFoundError(f"Market price cache not found: {path}")
+    obj = pd.read_pickle(path)
+    if isinstance(obj, pd.DataFrame) and obj.shape[1] == 1:
+        obj = obj.iloc[:, 0]
+    if not isinstance(obj, pd.Series):
+        raise TypeError(f"Market price cache is not a Series: {path}")
+    return obj
+
+
 def get_adj_close(ib, contract, duration="3 Y", bar_size="1 day"):
     bars = ib.reqHistoricalData(
         contract,
@@ -78,9 +123,14 @@ def get_adj_close(ib, contract, duration="3 Y", bar_size="1 day"):
         useRTH=True,
         formatDate=1
     )
+    if bars is None or (hasattr(bars, "__len__") and len(bars) == 0):
+        raise RuntimeError(f"No bars returned for {contract.localSymbol or contract.symbol}")
+
     df = util.df(bars)
-    if df.empty:
+    if df is None or getattr(df, "empty", True):
         raise RuntimeError(f"No data for {contract.localSymbol or contract.symbol}")
+    # Normalize to pandas datetime to avoid mixed `datetime.date` vs `Timestamp` index issues downstream.
+    df["date"] = pd.to_datetime(df["date"])
     df = df.set_index("date")
     return df["close"]
 
@@ -122,6 +172,193 @@ def _cache_write_pickle(path: Path, obj: Any) -> None:
     print(f"[cache] WRITE path={path} write_sec={write_sec:.3f} at={_now_str()}")
 
 
+def fetch_with_cache(
+    *,
+    payload: Dict[str, Any],
+    subdir: str,
+    compute_fn,
+    serializer: str = "pickle",
+    ext: Optional[str] = None,
+    meta: Optional[Any] = None,
+    verbose: bool = True,
+) -> Any:
+    """
+    Generic cache helper.
+
+    This is intentionally lightweight so it can be reused for non-fetch artifacts
+    (e.g. precomputed matrices, intermediate research objects).
+
+    Parameters
+    ----------
+    payload : dict
+        Dict used to build a stable cache key (md5 of stable JSON).
+    subdir : str
+        Sub-directory under ./cache/ (e.g. "companies", "mkt", "graphs").
+    compute_fn : callable
+        Function with no args that computes the object to cache.
+    serializer : {"pickle","json","npz"}
+        Storage format.
+    ext : str or None
+        File extension override. Defaults to "pkl"/"json"/"npz" based on serializer.
+    meta : any or None
+        Optional metadata to write to a sidecar file "<cache>.meta.txt".
+    verbose : bool
+        Print HIT/MISS logs.
+    """
+    cache_root = Path("cache") / subdir
+    cache_root.mkdir(parents=True, exist_ok=True)
+
+    serializer = str(serializer).lower().strip()
+    if ext is None:
+        ext = {"pickle": "pkl", "json": "json", "npz": "npz"}.get(serializer, "pkl")
+
+    key = _md5_key(payload)
+    cache_path = cache_root / f"{key}.{ext}"
+    meta_path = cache_root / f"{key}.meta.txt"
+
+    def _load() -> Any:
+        if serializer == "pickle":
+            return _cache_read_pickle(cache_path)
+        if serializer == "json":
+            t0 = time.perf_counter()
+            with cache_path.open("r", encoding="utf-8") as f:
+                obj = json.load(f)
+            load_sec = time.perf_counter() - t0
+            if verbose:
+                print(f"[cache] HIT  path={cache_path} load_sec={load_sec:.3f} at={_now_str()}")
+            return obj
+        if serializer == "npz":
+            t0 = time.perf_counter()
+            obj = dict(np.load(cache_path, allow_pickle=True))
+            load_sec = time.perf_counter() - t0
+            if verbose:
+                print(f"[cache] HIT  path={cache_path} load_sec={load_sec:.3f} at={_now_str()}")
+            return obj
+        raise ValueError(f"Unknown serializer: {serializer}")
+
+    def _save(obj: Any) -> None:
+        if meta is not None:
+            meta_path.write_text(_stable_json_dumps(meta), encoding="utf-8")
+        if serializer == "pickle":
+            _cache_write_pickle(cache_path, obj)
+            return
+        if serializer == "json":
+            if verbose:
+                print(f"[cache] writing... path={cache_path} at={_now_str()}")
+            t0 = time.perf_counter()
+            with cache_path.open("w", encoding="utf-8") as f:
+                json.dump(obj, f, ensure_ascii=False)
+            write_sec = time.perf_counter() - t0
+            if verbose:
+                print(f"[cache] WRITE path={cache_path} write_sec={write_sec:.3f} at={_now_str()}")
+            return
+        if serializer == "npz":
+            if verbose:
+                print(f"[cache] writing... path={cache_path} at={_now_str()}")
+            t0 = time.perf_counter()
+            if isinstance(obj, dict):
+                np.savez_compressed(cache_path, **obj)
+            else:
+                np.savez_compressed(cache_path, arr=obj)
+            write_sec = time.perf_counter() - t0
+            if verbose:
+                print(f"[cache] WRITE path={cache_path} write_sec={write_sec:.3f} at={_now_str()}")
+            return
+        raise ValueError(f"Unknown serializer: {serializer}")
+
+    if cache_path.exists():
+        return _load()
+
+    if verbose:
+        print(f"[cache] MISS path={cache_path} at={_now_str()}")
+
+    obj = compute_fn()
+    _save(obj)
+    return obj
+
+
+def fetch_companies_prices(
+    ib,
+    tickers,
+    duration: str = "3 Y",
+    bar_size: str = "1 day",
+    exchange: str = "SMART",
+    currency: str = "USD",
+    progress: bool = True,
+) -> pd.DataFrame:
+    """
+    Fetch companies adjusted close prices only (no cache).
+
+    Returns a DataFrame of adjusted close prices (may contain NaNs).
+    """
+    tickers_key = sorted(list(tickers))
+    contracts = [Stock(t, exchange, currency) for t in tickers_key]
+
+    invalid_tickers = _collect_invalid_contract_symbols(ib, contracts)
+    if invalid_tickers:
+        raise ValueError(
+            "Invalid tickers detected (contract qualification failed): "
+            + ", ".join(invalid_tickers)
+        )
+
+    if (tqdm is None) or (not progress):
+        print(f"[api] fetching adjusted close for {len(contracts)} tickers... at={_now_str()}")
+
+    iterable = contracts
+    if (tqdm is not None) and progress:
+        iterable = tqdm(contracts, desc="Fetching adjusted close", unit="ticker")
+
+    price_frames: Dict[str, pd.Series] = {}
+    failed = []
+    for c in iterable:
+        try:
+            price_frames[c.symbol] = get_adj_close(ib, c, duration, bar_size)
+        except Exception:
+            failed.append(c.symbol)
+            continue
+
+    if failed:
+        failed = sorted(set(failed))
+        print(f"[api] WARNING: no data for {len(failed)} tickers (showing up to 30): {failed[:30]}")
+
+    if not price_frames:
+        raise RuntimeError("No company price series were fetched (all tickers failed).")
+
+    prices = pd.concat(price_frames, axis=1).sort_index()
+    return prices
+
+
+def fetch_mkt_prices(
+    ib,
+    mkt_ticker: str = "SPY",
+    duration: str = "3 Y",
+    bar_size: str = "1 day",
+    exchange: str = "SMART",
+    currency: str = "USD",
+    mkt_params: Optional[Dict[str, Any]] = None,
+    progress: bool = True,
+) -> pd.Series:
+    """
+    Fetch market adjusted close prices only (no cache).
+    """
+    if (tqdm is None) or (not progress):
+        print(f"[api] fetching {mkt_ticker}... at={_now_str()}")
+
+    mkt = Stock(mkt_ticker, exchange, currency)
+    invalid_mkt = _collect_invalid_contract_symbols(ib, [mkt])
+    if invalid_mkt:
+        raise ValueError(
+            "Invalid market ticker detected (contract qualification failed): "
+            + ", ".join(invalid_mkt)
+        )
+
+    # mkt_params is currently unused for Stock/reqHistoricalData, but we keep it in the signature
+    # so callers can include it in cache keys for future extensions.
+    _ = mkt_params or {}
+    mkt_px = get_adj_close(ib, mkt, duration, bar_size).sort_index()
+    return mkt_px.copy()
+
+
 def _collect_invalid_contract_symbols(ib, contracts):
     """
     Try to qualify contracts and collect all invalid ones without stopping early.
@@ -155,183 +392,16 @@ def _collect_invalid_contract_symbols(ib, contracts):
     return sorted(set(invalid))
 
 
-def fancy_fetch_with_cache(
-    ib,
-    tickers,
-    duration="3 Y",
-    bar_size="1 day",
-    mkt_ticker="SPY",
-    exchange="SMART",
-    currency="USD",
-    mkt_params: Optional[Dict[str, Any]] = None,
-    progress=True,
-):
+def filter_valid_tickers(ib, tickers, exchange="SMART", currency="USD"):
     """
-    Fetch adjusted close for tickers and market ticker, compute returns, and cache result.
+    Validate a list of ticker strings via IB contract qualification.
 
     Returns:
-        df: DataFrame with columns [<tickers...>, "mkt"] of returns aligned by date
-        returns: DataFrame of ticker returns (df without "mkt")
-        spy_ret: Series of market returns (df["mkt"])
+        valid: list[str]
+        invalid: list[str]
     """
-    returns = fetch_companies_returns_with_cache(
-        ib,
-        tickers=tickers,
-        duration=duration,
-        bar_size=bar_size,
-        exchange=exchange,
-        currency=currency,
-        progress=progress,
-    )
-
-    mkt_df = fetch_mkt_returns_with_cache(
-        ib,
-        mkt_ticker=mkt_ticker,
-        duration=duration,
-        bar_size=bar_size,
-        exchange=exchange,
-        currency=currency,
-        mkt_params=mkt_params,
-        progress=progress,
-    )
-
     tickers_list = list(tickers)
-    returns_out = returns.reindex(columns=tickers_list).copy() if set(tickers_list).issubset(set(returns.columns)) else returns.copy()
-    df = returns_out.join(mkt_df, how="inner")
-    spy_ret = df["mkt"].copy()
-    return df, df.drop(columns=["mkt"]).copy(), spy_ret
-
-
-def fetch_companies_returns_with_cache(
-    ib,
-    tickers,
-    duration="3 Y",
-    bar_size="1 day",
-    exchange="SMART",
-    currency="USD",
-    progress=True,
-) -> pd.DataFrame:
-    """
-    Fetch companies returns only (no market), with caching.
-
-    Returns:
-        returns: DataFrame of companies returns aligned by date.
-    """
-    # Cache location is fixed to ./cache for simplicity.
-    cache_dir_path = Path("cache")
-    cache_dir_path.mkdir(parents=True, exist_ok=True)
-
-    tickers_list = list(tickers)
-    tickers_key = sorted(tickers_list)
-
-    companies_payload = {
-        "name": "companies_returns_v2",
-        "tickers": tickers_key,
-        "duration": duration,
-        "bar_size": bar_size,
-        "exchange": exchange,
-        "currency": currency,
-    }
-    companies_cache_path = cache_dir_path / "companies" / f"{_md5_key(companies_payload)}.pkl"
-
-    if companies_cache_path.exists():
-        returns = _cache_read_pickle(companies_cache_path)
-        if not isinstance(returns, pd.DataFrame):
-            raise RuntimeError(f"Companies cache is not a DataFrame: {companies_cache_path}")
-        # Ensure deterministic column order for downstream users
-        returns = returns.reindex(columns=tickers_list).copy() if set(tickers_list).issubset(set(returns.columns)) else returns.copy()
-        return returns
-
-    print(f"[cache] MISS companies=True mkt=False at={_now_str()}")
-
-    # ---- all api: tickers ----
-    contracts = [Stock(t, exchange, currency) for t in tickers_key]
-    invalid_tickers = _collect_invalid_contract_symbols(ib, contracts)
-    if invalid_tickers:
-        raise ValueError(
-            "Invalid tickers detected (contract qualification failed): "
-            + ", ".join(invalid_tickers)
-        )
-
-    if (tqdm is None) or (not progress):
-        print(f"[api] fetching adjusted close for {len(contracts)} tickers... at={_now_str()}")
-
-    iterable = contracts
-    if (tqdm is not None) and progress:
-        iterable = tqdm(contracts, desc="Fetching adjusted close", unit="ticker")
-
-    price_frames = {}
-    for c in iterable:
-        price_frames[c.symbol] = get_adj_close(ib, c, duration, bar_size)
-
-    prices = pd.concat(price_frames, axis=1).dropna()
-    returns = prices.pct_change().dropna()
-
-    _cache_write_pickle(companies_cache_path, returns)
-
-    returns = returns.reindex(columns=tickers_list).copy() if set(tickers_list).issubset(set(returns.columns)) else returns.copy()
-    return returns
-
-
-def fetch_mkt_returns_with_cache(
-    ib,
-    mkt_ticker="SPY",
-    duration="3 Y",
-    bar_size="1 day",
-    exchange="SMART",
-    currency="USD",
-    mkt_params: Optional[Dict[str, Any]] = None,
-    progress=True,
-) -> pd.DataFrame:
-    """
-    Fetch market returns only, with caching.
-
-    Returns:
-        mkt_df: DataFrame with a single column "mkt" of market returns.
-    """
-    # Cache location is fixed to ./cache for simplicity.
-    cache_dir_path = Path("cache")
-    cache_dir_path.mkdir(parents=True, exist_ok=True)
-
-    mkt_payload = {
-        "name": "mkt_returns_v2",
-        "mkt_ticker": mkt_ticker,
-        "duration": duration,
-        "bar_size": bar_size,
-        "exchange": exchange,
-        "currency": currency,
-        "mkt_params": mkt_params or {},
-    }
-    mkt_cache_path = cache_dir_path / "mkt" / f"{_md5_key(mkt_payload)}.pkl"
-
-    if mkt_cache_path.exists():
-        mkt_df = _cache_read_pickle(mkt_cache_path)
-        if isinstance(mkt_df, pd.Series):
-            mkt_df = mkt_df.to_frame("mkt")
-        if not isinstance(mkt_df, pd.DataFrame):
-            raise RuntimeError(f"Market cache is not a DataFrame/Series: {mkt_cache_path}")
-        if "mkt" not in mkt_df.columns:
-            if mkt_df.shape[1] == 1:
-                mkt_df = mkt_df.rename(columns={mkt_df.columns[0]: "mkt"})
-            else:
-                raise RuntimeError(f"Market cache missing 'mkt' column: {mkt_cache_path}")
-        return mkt_df.copy()
-
-    print(f"[cache] MISS companies=False mkt=True at={_now_str()}")
-
-    if (tqdm is None) or (not progress):
-        print(f"[api] fetching {mkt_ticker}... at={_now_str()}")
-
-    mkt = Stock(mkt_ticker, exchange, currency)
-    invalid_mkt = _collect_invalid_contract_symbols(ib, [mkt])
-    if invalid_mkt:
-        raise ValueError(
-            "Invalid market ticker detected (contract qualification failed): "
-            + ", ".join(invalid_mkt)
-        )
-
-    mkt_px = get_adj_close(ib, mkt, duration, bar_size)
-    mkt_df = mkt_px.pct_change().dropna().rename("mkt").to_frame()
-
-    _cache_write_pickle(mkt_cache_path, mkt_df)
-    return mkt_df.copy()
+    contracts = [Stock(t, exchange, currency) for t in tickers_list]
+    invalid = set(_collect_invalid_contract_symbols(ib, contracts))
+    valid = [t for t in tickers_list if t not in invalid]
+    return valid, sorted(invalid)
